@@ -471,14 +471,11 @@ bool stop_laser()
 bool disconnect_laser()
 {
   RCLCPP_INFO(get_logger(), "[YDLIDAR] Start Disconnect");
-  bool ok = laser_.disconnecting();
-  if (ok){
-    RCLCPP_INFO(get_logger(), "[YDLIDAR] Disconnect ended successfuly!");
-  }else{
-    RCLCPP_WARN(get_logger(), "[YDLIDAR] Disconnect ended with issues!");
-  }
+  // CYdLidar::disconnecting() returns void — it always closes the port.
+  laser_.disconnecting();
+  RCLCPP_INFO(get_logger(), "[YDLIDAR] Disconnect ended");
 
-  return ok;
+  return true;
 }
 
 // Stop scanning and close the serial port.
@@ -670,22 +667,16 @@ void scan_loop()
  
     if (!laser_.doProcessSimple(scan)) {
       consecutive_failures++;
-      consecutive_failures++;
       RCLCPP_WARN(get_logger(),
-        "[YDLIDAR] Scan failed #%d (driver error: %d (%s), scanning: %s)",
-        consecutive_failures,
         "[YDLIDAR] Scan failed #%d (driver error: %d (%s), scanning: %s)",
         consecutive_failures,
         static_cast<int>(laser_.getDriverError()),
         laser_.DescribeError(),
-        laser_.DescribeError(),
         laser_.isScanning() ? "yes" : "no");
- 
+
       {
         std::lock_guard<std::mutex> lock(scan_mutex_);
         if (!running_) {
-          RCLCPP_INFO(get_logger(), "[YDLIDAR] Scan loop received stop signal after %d failures",
-                      consecutive_failures);
           RCLCPP_INFO(get_logger(), "[YDLIDAR] Scan loop received stop signal after %d failures",
                       consecutive_failures);
           break;
@@ -703,14 +694,14 @@ void scan_loop()
           RCLCPP_ERROR(get_logger(), "[YDLIDAR] Failed to restart laser after reaching max failures");
           break;
         }
-      continue;
-    }
+        continue;
+      }
 
       // Backoff: sleep longer during failure to avoid CPU starvation
       std::this_thread::sleep_for(std::chrono::milliseconds(SCAN_FAILURE_SLEEP_MS));
       continue;
     }
- 
+
     consecutive_failures = 0;
 
     std::string frame_id;
@@ -767,9 +758,14 @@ sensor_msgs::msg::LaserScan make_laser_scan(
         return msg;
     }
 
-    int size = static_cast<int>(
+    // Round rather than truncate: slam_toolbox/Karto compute their own
+    // expected reading count from these same angle_min/angle_max/
+    // angle_increment fields using math::Round(...), so truncating here
+    // causes a persistent off-by-one mismatch whenever the division lands
+    // just under an integer due to float precision.
+    int size = static_cast<int>(lround(
         (scan.config.max_angle - scan.config.min_angle) /
-        scan.config.angle_increment) + 1;
+        scan.config.angle_increment)) + 1;
 
     const float fill = invalid_range_is_inf
         ? std::numeric_limits<float>::infinity()
